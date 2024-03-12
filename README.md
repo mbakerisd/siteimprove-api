@@ -18,5 +18,3 @@ Refer to documentation for endpoint usage.
 ## Contributing
 Contributions welcome. Please follow the contributing guide.
 
-## License
-MIT License.
