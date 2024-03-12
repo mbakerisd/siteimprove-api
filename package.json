@@ -1,9 +1,17 @@
 {
-  "dependencies": {
-    "axios": "^1.6.7",
-    "express": "^4.18.3",
-    "node-cron": "^3.0.3",
-    "pg": "^8.11.3",
-    "ps": "^1.0.0"
-  }
+    "name": "siteimprove-api-app",
+    "version": "1.0.0",
+    "description": "A Node.js app using SiteImprove API",
+    "main": "src/app.js",
+    "dependencies": {
+        "axios": "^1.6.7",
+        "dotenv": "^16.4.5",
+        "express": "^4.18.3",
+        "node-cron": "^3.0.3",
+        "pg": "^8.11.3",
+        "ps": "^1.0.0"
+    },
+    "scripts": {
+        "start": "nodemon src/app.js"
+    }
 }

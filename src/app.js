@@ -29,7 +29,7 @@ cron.schedule('* * * * *', async () => {
   console.log('Running a job at 05:00 at America/New_York timezone');
   try {
     // Fetch data from the main API endpoint
-    const response = await axios.get('https://api.eu.siteimprove.com/v2/sites?group_id=1183842&page_size=1', {
+    const response = await axios.get('https://api.eu.siteimprove.com/v2/sites?group_id=1183842&page_size=150', {
       headers: {
         'Authorization': authHeader
       }
