@@ -25,7 +25,7 @@ pool.connect().then(() => {
 });
 
 // Scheduled job to run every day at 5 PM New York time
-cron.schedule('* * * * *', async () => {
+cron.schedule('0 17 * * *', async () => {
   console.log('Running a job at 05:00 at America/New_York timezone');
   try {
     // Fetch data from the main API endpoint
