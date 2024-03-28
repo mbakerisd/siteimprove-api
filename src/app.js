@@ -24,9 +24,9 @@ pool.connect().then(() => {
   console.log('Connected to postgres');
 });
 
-// Scheduled job to run every day at 5 PM New York time
+// Scheduled job to run every day at 5 PM Los Angeles time
 cron.schedule('0 17 * * *', async () => {
-  console.log('Running a job at 05:00 at America/New_York timezone');
+  console.log('Running a job at 05:00 PM at America/Los_Angeles timezone');
   try {
     // Fetch data from the main API endpoint
     const response = await axios.get('https://api.eu.siteimprove.com/v2/sites?group_id=1183842&page_size=150', {
@@ -104,7 +104,7 @@ cron.schedule('0 17 * * *', async () => {
   }
 }, {
   scheduled: true,
-  timezone: "America/New_York"
+  timezone: "America/Los_Angeles"
 });
 
 app.listen(port, () => {
