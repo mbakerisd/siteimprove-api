@@ -3,6 +3,7 @@ const express = require('express');
 const axios = require('axios');
 const { Pool } = require('pg');
 const cron = require('node-cron');
+const siteRouter = require('./routes/api.js');
 
 const app = express();
 const port = 3000;
@@ -18,7 +19,15 @@ const pool = new Pool({
   database: process.env.DB_NAME,
   password: process.env.DB_PASSWORD,
   port: process.env.DB_PORT,
-});
+  ssl: {
+    rejectUnauthorized: false // For development only; in production, consider removing or setting to true
+  },
+  connectionTimeoutMillis: 10000, // 10 seconds
+  idleTimeoutMillis: 10000, // Example to close idle connections after 10 seconds
+  query_timeout: 60000, // 60 seconds
+  max: 20, // Max number of clients in the pool
+  min: 2   // Min number of clients in the pool
+})
 
 pool.connect().then(() => {
   console.log('Connected to postgres');
@@ -28,8 +37,8 @@ pool.connect().then(() => {
 cron.schedule('0 17 * * *', async () => {
   console.log('Running a job at 05:00 PM at America/Los_Angeles timezone');
   try {
-    // Fetch data from the main API endpoint
-    const response = await axios.get('https://api.eu.siteimprove.com/v2/sites?group_id=1183842&page_size=150', {
+    // Fetch data from the main API .endpoint
+    const response = await axios.get('https://api.eu.siteimprove.com/v2/sites?group_id=1183842&page_size=500', {
       headers: {
         'Authorization': authHeader
       }
@@ -110,3 +119,9 @@ cron.schedule('0 17 * * *', async () => {
 app.listen(port, () => {
   console.log(`Server running at http://localhost:${port}`);
 });
+
+// get route
+app.use(express.static('public'));
+app.use('/routes', siteRouter);
+
+

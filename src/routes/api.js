@@ -1,25 +1,10 @@
 const axios = require('axios');
 const Router = require("express").Router();
-const { Pool } = require('pg');
-const cron = require('node-cron');
 require('dotenv').config();
 
 const username = process.env.SITEIMPROVE_USERNAME;
 const apiKey = process.env.SITEIMPROVE_API_KEY;
 const authHeader = `Basic ${Buffer.from(`${username}:${apiKey}`).toString('base64')}`;
-
-// Create a new pool using the connection parameters in your .env file
-
-const pool = new Pool({
-  user: process.env.DB_USER,
-  host: process.env.DB_HOST,
-  database: process.env.DB_NAME,
-  password: process.env.DB_PASSWORD,
-  port: process.env.DB_PORT,
-});
-
-pool.connect().then(()=>{console.log('Connected to postgres')});
-
 
 Router.get('/', async (req, res) => {
   try {
@@ -47,21 +32,6 @@ Router.get('/', async (req, res) => {
           let aa = accessibilityResponse.data.a11y.aa;
           let aaa = accessibilityResponse.data.a11y.aaa;
           let aria = accessibilityResponse.data.a11y.aria;
-
-          pool.query('INSERT INTO ada_scores (sid,name,url,ada_a,ada_aa,ada_aaa,ada_aria,ada_score_total,date)  VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)',[
-            site.id,
-            site.site_name,
-            site.url,
-            parseInt(a),
-            parseInt(aa),
-            parseInt(aaa),
-            parseInt(aria),
-            parseInt(totalAccessibilityScore),
-            new Date().toISOString()
-           
-          ]).then(()=>{
-            console.log('record added')
-          }).catch(e=>{console.log(e)})
 
           return {
             id: site.id,
