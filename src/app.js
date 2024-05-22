@@ -3,7 +3,6 @@ const express = require('express');
 const axios = require('axios');
 const { Pool } = require('pg');
 const cron = require('node-cron');
-const siteRouter = require('./routes/api.js');
 
 const app = express();
 const port = 3000;
@@ -27,18 +26,35 @@ const pool = new Pool({
   query_timeout: 60000, // 60 seconds
   max: 20, // Max number of clients in the pool
   min: 2   // Min number of clients in the pool
-})
+});
 
 pool.connect().then(() => {
   console.log('Connected to postgres');
 });
 
+const fetchWithRetry = async (url, options, retries = 3, delay = 1000) => {
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      const response = await axios.get(url, options);
+      return response;
+    } catch (error) {
+      if (attempt < retries) {
+        console.warn(`Attempt ${attempt} failed. Retrying in ${delay}ms...`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      } else {
+        console.error(`Failed after ${retries} attempts:`, error);
+        throw error;
+      }
+    }
+  }
+};
+
 // Scheduled job to run every day at 5 PM Los Angeles time
-cron.schedule('0 17 * * *', async () => {
-  console.log('Running a job at 05:00 PM at America/Los_Angeles timezone');
+cron.schedule('*/2 * * * *', async () => {
+  console.log('Running a job at 04:00 PM at America/Los_Angeles timezone');
   try {
-    // Fetch data from the main API .endpoint
-    const response = await axios.get('https://api.eu.siteimprove.com/v2/sites?group_id=1183842&page_size=500', {
+    // Fetch data from the main API endpoint
+    const response = await axios.get('https://api.eu.siteimprove.com/v2/sites?group_id=1183842&page_size=150', {
       headers: {
         'Authorization': authHeader
       }
@@ -50,7 +66,7 @@ cron.schedule('0 17 * * *', async () => {
     const siteDetailsPromises = sites.map(async site => {
       if (site.product.includes('accessibility')) {
         try {
-          const accessibilityResponse = await axios.get(`https://api.eu.siteimprove.com/v2/sites/${site.id}/dci/overview`, {
+          const accessibilityResponse = await fetchWithRetry(`https://api.eu.siteimprove.com/v2/sites/${site.id}/dci/overview`, {
             headers: {
               'Authorization': authHeader
             }
@@ -62,7 +78,7 @@ cron.schedule('0 17 * * *', async () => {
           let aaa = accessibilityResponse.data.a11y.aaa;
           let aria = accessibilityResponse.data.a11y.aria;
 
-          await pool.query('INSERT INTO ada_scores (sid,name,url,ada_a,ada_aa,ada_aaa,ada_aria,ada_score_total,date)  VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)', [
+          await pool.query('INSERT INTO ada_scores (sid,name,url,ada_a,ada_aa,ada_aaa,ada_aria,ada_score_total,date) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)', [
             site.id,
             site.site_name,
             site.url,
@@ -119,9 +135,3 @@ cron.schedule('0 17 * * *', async () => {
 app.listen(port, () => {
   console.log(`Server running at http://localhost:${port}`);
 });
-
-// get route
-app.use(express.static('public'));
-app.use('/routes', siteRouter);
-
-

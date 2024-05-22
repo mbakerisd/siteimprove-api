@@ -4,17 +4,15 @@ document.addEventListener('DOMContentLoaded', function () {
     fetch('/routes')
         .then(response => response.json())
         .then(data => {
-            // Check if data itself is an array or if it contains an 'items' property that is an array
             const sites = Array.isArray(data) ? data : (data.items || []);
             
             sites.forEach(site => {
-                // Placeholder for actual accessibility score
-                // Assuming 'accessibilityScore' is the key where the score is stored and needs to be fetched or calculated
                 const accessibilityScore = site.accessibilityScore || 'Not Available';
                 const a = site.a || 'Not Available';
                 const aa = site.aa || 'Not Available';
                 const aaa = site.aaa || 'Not Available';
                 const aria = site.aria || 'Not Available';
+                const date = site.date || 'Not Available'; 
 
                 let row = `<tr>
                             <td>${site.id}</td>
@@ -25,6 +23,7 @@ document.addEventListener('DOMContentLoaded', function () {
                             <td>${aaa}</td>
                             <td>${aria}</td>
                             <td>${accessibilityScore}%</td>
+                            <td>${date}</td>
                            </tr>`;
                 tableBody.innerHTML += row;
             });
