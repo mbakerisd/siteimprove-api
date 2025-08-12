@@ -2,17 +2,20 @@ require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
 const { Pool } = require('pg');
-const cron = require('node-cron');
+const moment = require('moment-timezone');
+const ExcelJS = require('exceljs');
+const { exec } = require('child_process');
+const path = require('path');
 
 const app = express();
 const port = 3000;
 
-// Retrieve Siteimprove API credentials from environment variables
+app.use(express.static('public'));
+
 const username = process.env.SITEIMPROVE_USERNAME;
 const apiKey = process.env.SITEIMPROVE_API_KEY;
 const authHeader = `Basic ${Buffer.from(`${username}:${apiKey}`).toString('base64')}`;
 
-// Configure PostgreSQL connection pool
 const pool = new Pool({
   user: process.env.DB_USER,
   host: process.env.DB_HOST,
@@ -20,133 +23,152 @@ const pool = new Pool({
   password: process.env.DB_PASSWORD,
   port: process.env.DB_PORT,
   ssl: {
-    rejectUnauthorized: false // For development only; in production, consider setting to true or removing
+    rejectUnauthorized: false
   },
-  connectionTimeoutMillis: 10000, // 10 seconds
-  idleTimeoutMillis: 10000, // Close idle connections after 10 seconds
-  query_timeout: 60000, // 60 seconds
-  max: 20, // Max number of clients in the pool
-  min: 2 // Min number of clients in the pool
+  connectionTimeoutMillis: 30000,
+  idleTimeoutMillis: 20000,
+  query_timeout: 120000,
+  max: 50,
+  min: 5
 });
 
-// Connect to PostgreSQL database
 pool.connect().then(() => {
-  console.log('Connected to postgres');
+  console.log('✅ Connected to PostgreSQL');
 }).catch(err => {
-  console.error('Error connecting to postgres:', err);
+  console.error('❌ Connection error:', err);
 });
 
-// Function to fetch data with exponential backoff retry logic
-const fetchWithExponentialBackoff = async (url, options, retries = 5, delay = 1000) => {
-  for (let attempt = 1; attempt <= retries; attempt++) {
-    try {
-      const response = await axios.get(url, options);
-      return response;
-    } catch (error) {
-      if (error.response && error.response.status === 429) {
-        // Handle rate limiting specifically
-        const retryAfter = error.response.headers['retry-after'];
-        if (retryAfter) {
-          console.warn(`Rate limit hit. Retrying after ${retryAfter} seconds...`);
-          await new Promise(resolve => setTimeout(resolve, retryAfter * 1000));
-        } else {
-          console.warn(`Rate limit hit. Retrying in ${delay}ms...`);
-          await new Promise(resolve => setTimeout(resolve, delay));
-        }
-      } else if (attempt < retries) {
-        // Exponential backoff
-        const exponentialDelay = delay * Math.pow(2, attempt - 1);
-        console.warn(`Attempt ${attempt} failed. Retrying in ${exponentialDelay}ms...`, error);
-        await new Promise(resolve => setTimeout(resolve, exponentialDelay));
-      } else {
-        console.error(`Failed after ${retries} attempts:`, error);
-        throw error;
-      }
-    }
-  }
-};
-
-// Function to insert data into the database with retry logic
-const insertDataWithRetry = async (query, values, retries = 3) => {
-  for (let attempt = 1; attempt <= retries; attempt++) {
-    try {
-      await pool.query(query, values);
-      console.log('Record added successfully');
-      return;
-    } catch (error) {
-      console.error(`Database insert attempt ${attempt} failed:`, error);
-      if (attempt === retries) {
-        throw error;
-      }
-    }
-  }
-};
-
-// Function to validate data before insertion
-const validateData = (data) => {
-  const errors = [];
-
-  if (!data.sid || typeof data.sid !== 'number') {
-    errors.push('Invalid site ID');
-  }
-  if (!data.name || typeof data.name !== 'string' || data.name.trim() === '') {
-    errors.push('Invalid site name');
-  }
-  if (!data.url || typeof data.url !== 'string' || !data.url.startsWith('http')) {
-    errors.push('Invalid URL');
-  }
-  if (typeof data.ada_a !== 'number' || data.ada_a < 0 || data.ada_a > 100) {
-    errors.push('Invalid ADA A score');
-  }
-  if (typeof data.ada_aa !== 'number' || data.ada_aa < 0 || data.ada_aa > 100) {
-    errors.push('Invalid ADA AA score');
-  }
-  if (typeof data.ada_aaa !== 'number' || data.ada_aaa < 0 || data.ada_aaa > 100) {
-    errors.push('Invalid ADA AAA score');
-  }
-  if (typeof data.ada_aria !== 'number' || data.ada_aria < 0 || data.ada_aria > 100) {
-    errors.push('Invalid ADA ARIA score');
-  }
-  if (typeof data.ada_score_total !== 'number' || data.ada_score_total < 0 || data.ada_score_total > 100) {
-    errors.push('Invalid total ADA score');
-  }
-  if (!data.date || isNaN(Date.parse(data.date))) {
-    errors.push('Invalid date');
-  }
-
-  if (errors.length > 0) {
-    const error = new Error('Validation failed');
-    error.details = errors;
-    throw error; // Throw validation error if any field is invalid
-  }
-
-  return data; // Return validated data
-};
-
-// Scheduled job to run every day at 3 PM Los Angeles time
-cron.schedule('*/3 * * * *', async () => {
-  console.log('Running a job at 03:00 PM at America/Los_Angeles timezone');
+const stripProtocol = (url) => {
   try {
-    // Fetch the list of sites from the Siteimprove API
+    const parsed = new URL(url);
+    return parsed.hostname + parsed.pathname;
+  } catch (e) {
+    return url.replace(/^https?:\/\//i, '').toLowerCase();
+  }
+};
+
+const loadApprovedUrls = async () => {
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.readFile('./checklist/approved_sites.xlsx');
+  const worksheet = workbook.getWorksheet(1);
+
+  const approvedUrls = new Set();
+  worksheet.eachRow((row, rowNumber) => {
+    if (rowNumber === 1) return;
+    const raw = row.getCell('B').text.trim();
+    const normalized = stripProtocol(raw.toLowerCase());
+    if (raw) approvedUrls.add(normalized);
+  });
+
+  console.log(`🔗 Total Approved URLs: ${approvedUrls.size}`);
+  return approvedUrls;
+};
+
+const logErrorToDatabase = async (siteId, siteName, errorMessage, level = 'ERROR') => {
+  try {
+    await pool.query(
+      'INSERT INTO error_logs (site_id, site_name, message, level, timestamp) VALUES ($1, $2, $3, $4, NOW())',
+      [siteId || null, siteName || null, errorMessage, level]
+    );
+    console.log(`📦 Logged ${level} for site ${siteName}`);
+  } catch (error) {
+    console.error('❌ Failed to log error:', error);
+  }
+};
+
+const fetchExistingRecords = async () => {
+  const result = await pool.query('SELECT sid, date FROM ada_scores');
+  return new Set(result.rows.map(row => `${row.sid}-${row.date}`));
+};
+
+const insertScore = async (record, existingRecords) => {
+  const key = `${record.sid}-${record.date}`;
+  if (existingRecords.has(key)) {
+    console.log(`⏩ Skipping existing record: ${key}`);
+    return;
+  }
+
+  const query = `
+    INSERT INTO ada_scores (sid, name, url, ada_a, ada_aa, ada_aaa, ada_aria, ada_score_total, site_target_score, date)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+    ON CONFLICT (sid, date) DO NOTHING
+  `;
+
+  const values = [
+    record.sid,
+    record.name,
+    record.url,
+    record.ada_a,
+    record.ada_aa,
+    record.ada_aaa,
+    record.ada_aria,
+    record.ada_score_total,
+    record.site_target_score,
+    record.date,
+  ];
+
+  try {
+    await pool.query(query, values);
+    console.log(`✅ Inserted: ${record.name}`);
+  } catch (err) {
+    console.error(`❌ Insert failed for ${record.name}: ${err.message}`);
+    await logErrorToDatabase(record.sid, record.name, err.message);
+  }
+};
+
+const fetchAndInsertRecords = async () => {
+  console.log('🚀 Starting Siteimprove pull...');
+  const existingRecords = await fetchExistingRecords();
+  const approvedUrls = await loadApprovedUrls();
+
+  try {
     const response = await axios.get('https://api.eu.siteimprove.com/v2/sites?group_id=1183842&page_size=200', {
-      headers: { 'Authorization': authHeader }
+      headers: { 'Authorization': authHeader },
     });
 
-    const sites = response.data.items;
+    const sites = response.data.items.filter(site => site.product.includes('accessibility'));
+    console.log(`🔎 Total accessible sites pulled: ${sites.length}`);
 
-    // Fetch additional data for each site asynchronously
-    const siteDetailsPromises = sites.map(async site => {
-      if (site.product.includes('accessibility') && !site.url.includes('-qa.wppro.lacounty.gov') && !site.url.includes('-dev.wppro.lacounty.gov')) {
+    for (let i = 0; i < sites.length; i += 20) {
+      const batch = sites.slice(i, i + 20);
+
+      for (const site of batch) {
+        const normalizedSiteUrl = stripProtocol(site.url);
+        const today = new Date().toISOString().split('T')[0];
+
+        if (!approvedUrls.has(normalizedSiteUrl)) {
+          console.log(`🚫 Skipping unmatched site: ${site.url}`);
+          continue;
+        }
+
         try {
-          // Fetch accessibility data for the site
-          const accessibilityResponse = await fetchWithExponentialBackoff(`https://api.eu.siteimprove.com/v2/sites/${site.id}/dci/overview`, {
-            headers: { 'Authorization': authHeader }
+          console.log(`➡️ Processing site: ${site.site_name} (${site.id})`);
+
+          const scoreResponse = await axios.get(`https://api.eu.siteimprove.com/v2/sites/${site.id}/dci/overview`, {
+            headers: { 'Authorization': authHeader },
           });
 
-          const { a, aa, aaa, aria, total: totalAccessibilityScore } = accessibilityResponse.data.a11y;
+          let siteTarget = null;
+          try {
+            const targetResponse = await axios.get(`https://api.eu.siteimprove.com/v2/sites/${site.id}/a11y/overview/site_target/history`, {
+              headers: { 'Authorization': authHeader },
+            });
 
-          // Validate data before inserting into the database
-          const validatedData = validateData({
+            const todayStr = new Date().toISOString().split('T')[0];
+            const todayTarget = targetResponse.data.items.find(entry => entry.timestamp.startsWith(todayStr));
+
+            if (todayTarget) {
+              siteTarget = parseFloat(todayTarget.site_target_percentage);
+            } else {
+              await logErrorToDatabase(site.id, site.site_name, 'No site_target_percentage entry for today', 'INFO');
+            }
+          } catch (targetErr) {
+            siteTarget = null;
+            await logErrorToDatabase(site.id, site.site_name, `Target score fetch error: ${targetErr.message}`, 'INFO');
+          }
+
+          const { a, aa, aaa, aria, total } = scoreResponse.data.a11y;
+          let record = {
             sid: site.id,
             name: site.site_name,
             url: site.url,
@@ -154,70 +176,89 @@ cron.schedule('*/3 * * * *', async () => {
             ada_aa: parseInt(aa),
             ada_aaa: parseInt(aaa),
             ada_aria: parseInt(aria),
-            ada_score_total: parseInt(totalAccessibilityScore),
-            date: new Date().toISOString()
-          });
-
-          // Insert validated data into the database
-          await insertDataWithRetry('INSERT INTO ada_scores (sid, name, url, ada_a, ada_aa, ada_aaa, ada_aria, ada_score_total, date) VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9)', [
-            validatedData.sid,
-            validatedData.name,
-            validatedData.url,
-            validatedData.ada_a,
-            validatedData.ada_aa,
-            validatedData.ada_aaa,
-            validatedData.ada_aria,
-            validatedData.ada_score_total,
-            validatedData.date
-          ]);
-
-          return {
-            id: site.id,
-            site_name: site.site_name,
-            url: site.url,
-            accessibilityScore: totalAccessibilityScore,
-            a: a,
-            aa: aa,
-            aaa: aaa,
-            aria: aria
+            ada_score_total: parseInt(total),
+            site_target_score: siteTarget,
+            date: today,
           };
-        } catch (error) {
-          console.error(`Error fetching accessibility data for site ID ${site.id}:`, error);
-          return {
-            id: site.id,
-            site_name: site.site_name,
-            url: site.url,
-            accessibilityScore: 'Error fetching score'
-          };
+
+          await insertScore(record, existingRecords);
+          record = null;
+        } catch (err) {
+          console.error(`❌ Error for ${site.site_name}: ${err.message}`);
+          await logErrorToDatabase(site.id, site.site_name, `Approved site failed during processing: ${err.message}`, 'WARNING');
         }
-      } else {
-        return {
-          id: site.id,
-          site_name: site.site_name,
-          url: site.url,
-          accessibilityScore: 'Not applicable'
-        };
       }
-    });
 
-    // Wait for all site details to be processed
-    const processedSites = await Promise.allSettled(siteDetailsPromises);
-    processedSites.forEach(result => {
-      if (result.status === 'rejected') {
-        console.error('A site failed to process:', result.reason);
-      }
-    });
-    console.log(processedSites.map(result => result.value || result.reason));
+      logMemoryUsage();
+    }
 
-  } catch (error) {
-    console.error('Error making API request:', error);
+    console.log('✅ All done.');
+  } catch (err) {
+    console.error('❌ Error during main fetch:', err.message);
+    await logErrorToDatabase(null, 'General API Error', err.message);
   }
-}, {
-  scheduled: true,
-  timezone: "America/Los_Angeles"
+};
+
+const logMemoryUsage = () => {
+  const used = process.memoryUsage();
+  console.log(`📊 Memory - RSS: ${(used.rss / 1024 / 1024).toFixed(2)}MB, Heap: ${(used.heapUsed / 1024 / 1024).toFixed(2)}MB`);
+};
+
+// ✅ ROUTES
+app.get('/run-now', async (req, res) => {
+  console.log(`📥 Manual run @ ${moment().tz('America/Los_Angeles').format()}`);
+  await fetchAndInsertRecords();
+  res.send('✅ ADA scores fetched and inserted.');
 });
 
-// Start the Express server
+app.get('/run-batch', async (req, res) => {
+  const { start, end } = req.query;
+  if (!start || !end) return res.status(400).send('❌ Start and end dates are required.');
+
+  const batchScript = path.resolve(__dirname, 'batchv2.js');
+  const command = `node "${batchScript}" ${start} ${end}`;
+  console.log(`🚀 Running batch update: ${command}`);
+
+  exec(command, (error, stdout, stderr) => {
+    if (error) {
+      console.error(`❌ Exec error: ${error.message}`);
+      return res.status(500).send('❌ Batch run failed.');
+    }
+    if (stderr) console.error(`⚠️ STDERR: ${stderr}`);
+    console.log(`✅ STDOUT:\n${stdout}`);
+    res.send('✅ Batch run completed. Check logs for details.');
+  });
+});
+
+app.get('/api/status', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT date, COUNT(*) AS count
+      FROM ada_scores
+      GROUP BY date
+      ORDER BY date DESC
+    `);
+    res.json(result.rows);
+  } catch (err) {
+    console.error('❌ Error fetching status summary:', err);
+    res.status(500).json({ error: 'Failed to fetch status summary' });
+  }
+});
+
+app.get('/api/today-records', async (req, res) => {
+  try {
+    const today = new Date().toISOString().split('T')[0];
+    const result = await pool.query(
+      `SELECT name, url, date, site_target_score FROM ada_scores WHERE date = $1`,
+      [today]
+    );
+    res.json(result.rows);
+  } catch (err) {
+    console.error('❌ Error fetching today records:', err);
+    res.status(500).json({ error: 'Failed to fetch today records' });
+  }
+});
+
 app.listen(port, () => {
-  console.log(`Server running at http://localhost:${port}`);
+  console.log(`🌐 Server on http://localhost:${port}`);
 });
